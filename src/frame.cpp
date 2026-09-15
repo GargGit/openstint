@@ -118,7 +118,11 @@ float Frame::rssi() const {
 }
 
 float Frame::evm() const {
-    return evm_sum / (payload_size + preamble_size + SymbolReader::fseq_syms);
+    return std::sqrt(evm_sum / symbols.size());
+}
+
+float Frame::mer() const {
+    return -10.0f * std::log10(evm_sum / symbols.size());
 }
 
 float Frame::symbol_magnitude() const {
@@ -164,6 +168,7 @@ std::ostream& operator <<(std::ostream& os, const Frame& f) {
               << " M:" << f.preamble_metric
               << " RSSI:" << f.rssi()
               << " EVM:" << f.evm()
+              << " MER:" << f.mer()
               << " FREQ:" << (f.phase_per_symbol / (2.0f * 3.14) * 1250000.0f)
               << " MAG:" << f.symbol_magnitude()
               << " BITS:" << shex.str()
@@ -435,7 +440,8 @@ void SymbolReader::read_symbol(Frame *frame, const std::complex<int8_t> *src, st
     modemcf_demodulate_soft(bpsk_modem, symbol, &bit, &soft_bit);
     frame->softbits.push_back(soft_bit);
     frame->symbols.push_back(symbol);
-    frame->evm_sum += modemcf_get_demodulator_evm(bpsk_modem);
+    const float evm = modemcf_get_demodulator_evm(bpsk_modem);
+    frame->evm_sum += evm * evm;
 
     // decision-directed (blind) EQ update toward the demodulated symbol
     std::complex<float> d_prime;

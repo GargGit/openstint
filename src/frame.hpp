@@ -44,7 +44,7 @@ struct Frame {
     std::vector<uint8_t> softbits;
     // actual symbols
     std::vector<std::complex<float>> symbols;
-    // decoding error accumulator
+    // sum of |e|^2 over all symbols:
     float evm_sum = 0;
 
     // frame timing, 2 types of time is tracked:
@@ -69,7 +69,8 @@ struct Frame {
     void identify_preamble(); // locates preamble, corrects the BPSK phase if needed
     const uint8_t* bits() const; // payload softbits, null if the preamble was not identified
     float rssi() const;
-    float evm() const;
+    float evm() const; // RMS EVM, linear (reference constellation is +/-1)
+    float mer() const; // modulation error ratio, dB
     float symbol_magnitude() const;
 };
 
