@@ -125,8 +125,17 @@ float Frame::mer() const {
     return -10.0f * std::log10(evm_sum / symbols.size());
 }
 
+// symbol_scale carries two factors on top of the signal level: the AGC convention
+// (1.41 peak for the +/-1 reference constellation) and a sqrt(samples_per_symbol),
+// because train_preamble() divides the preamble window energy by the symbol count
+// rather than the sample count. Undoing both turns 1/symbol_scale back into the RMS
+// sample magnitude in raw ADC counts, which is the scale rssi() needs to be comparable
+// with the noise floor in the S counters. Without it rssi() read 10*log10(sps/2) high:
+// +3 dB at 4 samples/symbol, +6 dB at 8, and only 2 sps happened to be right.
+static const float symbol_scale_to_rms = 1.41f / std::sqrt(static_cast<float>(SAMPLES_PER_SYMBOL));
+
 float Frame::symbol_magnitude() const {
-    return 1.0f / symbol_scale;
+    return symbol_scale_to_rms / symbol_scale;
 }
 
 std::ostream& operator <<(std::ostream& os, const Frame& f) {
