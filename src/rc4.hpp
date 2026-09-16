@@ -64,7 +64,7 @@ public:
     enum EvaluationResult { NO_ACTION, START, INTERRUPED, DONE, RESET };
 
     void append(uint64_t timestamp, float rssi, uint32_t transponder_id, uint64_t rc4_payload);
-    EvaluationResult evaluate(uint64_t timestamp);
+    EvaluationResult evaluate(uint64_t timestamp, float noise_floor);
     std::vector<uint64_t> registry_payloads();
     uint32_t preferred_transponder_id();
     std::pair<uint64_t, uint64_t> buffer_timerange();

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <complex>
 #include <format>
+#include <limits>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -31,6 +32,7 @@ static SymbolReader symbol_reader;
 static Frame frame;
 static PassingDetector passing_detector;
 static RxStatistics rx_stats;
+static float last_noise_floor = -std::numeric_limits<float>::infinity(); // noise floor from the last status snapshot, dBFS;
 static bool monitor_mode = false;
 static const uint64_t startup_ts = duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
 static bool mode_sysclk = false;
@@ -240,9 +242,15 @@ void report_detections() {
 
     // report status once a second
     if (rx_stats.reporting_due(now_ts)) {
-        const std::string report = std::format("S {} {}",
+        auto [noise_floor, dc_magnitude, frames_received, frames_processed] = rx_stats.snapshot_and_reset(now_ts);
+        last_noise_floor = noise_floor;
+
+        const std::string report = std::format("S {} {:.2f} {:.2f} {} {}",
             status_ts,
-            rx_stats.snapshot_and_reset(now_ts)
+            noise_floor,
+            dc_magnitude,
+            frames_received,
+            frames_processed
         );
 
         std::cout << report << std::endl;
@@ -278,7 +286,7 @@ void report_detections() {
         publisher->send(zmq::buffer(report), zmq::send_flags::none);
     }
 
-    auto trainer_result = rc4_trainer.evaluate(now_ts);
+    auto trainer_result = rc4_trainer.evaluate(now_ts, last_noise_floor);
     switch (trainer_result) {
         case RC4Trainer::EvaluationResult::START: {
             const auto report = std::format("L {} START {:.1f}", status_ts, rc4_trainer.last_rssi());

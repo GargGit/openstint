@@ -2,13 +2,19 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <set>
 #include <string>
 
-#define RC4_TRAINING_RSSI_LIMIT -20.0f
+// Training wants a transponder parked on the antenna, so the candidate has to stand
+// this far above the measured noise floor. Frame::rssi() and the noise floor in RxSnapshot
+// are both dBFS over total complex power, so their difference is an SNR in dB and the
+// gate tracks the radio's gain instead of assuming one - which the previous absolute
+// -20 dBFS limit did, and got wrong by 10*log10(samples_per_symbol/2) on top of that.
+#define RC4_TRAINING_MIN_SNR 16.0f
 
 RC4Message::RC4Message(const uint8_t *softbits) {
     // differential-decode: decoded[i] = raw[i] ^ raw[i-1], assuming raw[-1] = 0
@@ -232,14 +238,18 @@ void RC4Trainer::append(uint64_t timestamp, float rssi, uint32_t transponder_id,
     }
 }
 
-RC4Trainer::EvaluationResult RC4Trainer::evaluate(uint64_t timestamp) {
+RC4Trainer::EvaluationResult RC4Trainer::evaluate(uint64_t timestamp, float noise_floor) {
     std::lock_guard<std::mutex> lock(mutex);
 
     switch (state) {
         case state_t::IDLE: {
             if (buffer.size() < 128) break;
             const Entry &last = buffer.back();
-            if ((int64_t)(timestamp - last.timestamp) > 100000 || last.rssi <= RC4_TRAINING_RSSI_LIMIT) break;
+            if ((int64_t)(timestamp - last.timestamp) > 100000) break;
+            // non-finite means there is no noise estimate yet (or the frames never stop
+            // long enough to take one): fail closed rather than start on an unknown floor
+            const float snr = last.rssi - noise_floor;
+            if (!std::isfinite(snr) || snr < RC4_TRAINING_MIN_SNR) break;
             auto tail = std::prev(buffer.end(), 128);
             auto [mn, mx] = std::minmax_element(
                 tail,

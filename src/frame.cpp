@@ -262,9 +262,25 @@ std::optional<DetectionResult> FrameDetector::process_baseband(const std::comple
 
 void FrameDetector::update_statistics() {
     if (n > STATS_UPDATE_THRESHOLD) {
+        const std::complex<float> mean = complex_cast<float>(s1) / static_cast<float>(n);
+
+        // s2 was accumulated as |x - offset|^2 against the *integer* dc estimate, and
+        // E[|x-o|^2] = var + |mean-o|^2 holds for any constant o. offset is only ever
+        // written below, so it really is constant across the accumulation window and
+        // the identity is exact. Truncating the dc to whole counts leaves up to ~0.7
+        // counts of residual, making that second term ~0.6 counts^2 - more than the
+        // noise power itself on a quiet channel, i.e. a noise floor reported ~3.5 dB
+        // high. Subtract it out with the full-precision mean.
+        // Note: reads offset before it is updated - the correction needs the value
+        // s2 was accumulated against, not the new one.
+        const std::complex<float> residual = mean - complex_cast<float>(offset);
+        // sample's variance (vs population variance); clamped because the corrected
+        // estimate can land slightly below zero on a near-silent channel, and the
+        // reporting path takes log10() of it
+        variance = std::max(0.0f, static_cast<float>(s2) / (n - 1) - std::norm(residual));
+
         offset = complex_cast<int8_t>(s1 / n);
-        offset_hires = complex_cast<float>(s1) / static_cast<float>(n);
-        variance = static_cast<float>(s2) / (n - 1); // sample's variance (vs population variance)
+        offset_hires = mean;
         reset_statistics_counters();
     }
 }

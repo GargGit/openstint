@@ -21,10 +21,10 @@ void RxStatistics::save_channel_characteristics(std::complex<float> _dc_offset, 
     noise_power = _noise_power;
 }
 
-// Formatting and reset happen under a single lock: with two separate locked
+// Reading and resetting happen under a single lock: with two separate locked
 // calls, a frame registered by the RX thread in between would be counted into
-// neither the report being formatted nor the next one.
-std::string RxStatistics::snapshot_and_reset(uint64_t current_timestamp) {
+// neither the snapshot being taken nor the next one.
+RxSnapshot RxStatistics::snapshot_and_reset(uint64_t current_timestamp) {
     std::lock_guard<std::mutex> lock(mutex);
 
     // there is a minor trickery here: noise power is calculated from sample variance (sigma-squared),
@@ -32,20 +32,14 @@ std::string RxStatistics::snapshot_and_reset(uint64_t current_timestamp) {
     // rssi = 10*log(Psig/Pmax)
     //      = 10*log(Psig) - 10*log(Pmax)
     //      = 10*log(Psig) - 20*log(Vmax)
-    float noise_floor = 10.0f * std::log10(noise_power) - 20.0 * std::log10(ADC_FULL_SCALE);
-    
-    std::string temp;
-    std::format_to(
-        std::back_inserter(temp), "{:.2f} {:.2f} {} {}",
-        noise_floor, 
-        std::abs(dc_offset), 
-        frames_received,
-        frames_processed
-    );
+    // Frame::rssi() reports on this very scale, so a difference of the two is an SNR in dB.
+    const float noise_floor = 10.0f * std::log10(noise_power) - 20.0 * std::log10(ADC_FULL_SCALE);
+
+    const RxSnapshot snapshot = { noise_floor, std::abs(dc_offset), frames_received, frames_processed };
 
     frames_received = 0;
     frames_processed = 0;
     last_reset_timestamp = current_timestamp;
 
-    return temp;
+    return snapshot;
 }
