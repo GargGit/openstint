@@ -143,6 +143,7 @@ void detect_frames(const std::complex<int8_t>* samples, std::size_t sample_count
                     timestamp + (static_cast<uint64_t>(idx) * 1000000ull / SAMPLE_RATE), // "UL" on windows is 4 bytes :o
                     timecode + idx
                 );
+                frame.sample_phase = frame_detector.sample_phase();
                 // defer training by fseq_halflen symbols: the centered EQ needs the
                 // trailing (future) symbols, which become ordinary past samples once
                 // they arrive. timing stays anchored at this detection point.

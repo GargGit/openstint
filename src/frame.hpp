@@ -58,6 +58,10 @@ struct Frame {
     float symbol_scale = 0;
     float phase = 0;
     float phase_per_symbol = 0; // radian/symbol
+    float phase_per_symbol0 = 0; // initial (preamble-based) estimate of phase_per_symbol, diagnostics only
+
+    // sample phase (0..samples_per_symbol-1) the frame detector matched the preamble on
+    int sample_phase = -1;
 
     // offset of the preamble inside softbits, set by identify_preamble();
     // negative until a preamble is located (or if there is none)
@@ -91,6 +95,8 @@ class FrameDetector {
     std::complex<int32_t> s1 = {0, 0}; // sum of samples
     uint32_t s2 = 0; // sum of sample squared
     int n = 0; // number of samples measured
+
+    int best_sample_phase = 0; // sample phase of the last preamble match
 public:
     std::optional<DetectionResult> process_baseband(const std::complex<int8_t> *samples);
     void update_statistics();
@@ -99,6 +105,7 @@ public:
     float symbol_energy() const;
     float noise_energy() const;
     std::complex<float> dc_offset() const;
+    int sample_phase() const;
 };
 
 class SymbolReader {
@@ -112,10 +119,15 @@ public:
     static constexpr int preamble_buffer_size = preamble_symbol_count * samples_per_symbol;
     static constexpr int reserve_buffer_size = preamble_buffer_size;
     
-    static constexpr float eq_mu_train = 0.05f * samples_per_symbol;
-    static constexpr float eq_mu_track = eq_mu_train * 2.0f;
-    static constexpr float costas_p = 0.020f;
-    static constexpr float costas_i = 0.002f;
+    // tuning note: liquid normalizes these to samples-per-symbol
+    static constexpr float eq_mu_train = 0.2f;
+    static constexpr float eq_mu_track = 0.4f;
+
+    // tuning note: increasing p makes the loop react more strongly
+    // to higher-frequency variations in phase. we'll see such in low-snr
+    // environments (as noise), where the last thing we want is strong reaction
+    static constexpr float costas_p = 0.10f;
+    static constexpr float costas_i = 0.005f;
 
 private:
     eqlms_cccf sym_eq;   // equalizer, trained on preamble data
@@ -142,12 +154,12 @@ public:
     
     void train_preamble(Frame *dst, const std::complex<int8_t> *src, int end, std::complex<float> dc_offset);
     void read_preamble(Frame *dst, const std::complex<int8_t> *src, int end, std::complex<float> dc_offset);
-    void read_symbol(Frame *dst, const std::complex<int8_t> *src, std::complex<float> dc_offset);
+    void read_symbol(Frame *dst, const std::complex<int8_t> *src, std::complex<float> dc_offset, bool adapt = true);
     void update_reserve_buffer(const std::complex<int8_t> *src, int end);
     bool is_frame_complete(const Frame *f);
 
 private:
-    void costas_tune_correction(Frame *frame, std::complex<float> symbol);
+    void costas_tune_correction(Frame *frame, std::complex<float> symbol, bool adapt);
     void load_preamble_buffer(const std::complex<int8_t> *src, int end, std::complex<float> dc_offset);
     std::pair<float, float> estimate_phase_freq(Frame *frame, int shift = 2);
     void train_fseq(Frame *frame, float mu);
