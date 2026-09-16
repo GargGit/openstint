@@ -35,7 +35,7 @@ std::string transponder_system_name(TransponderSystem tsys) {
 
 void PassingDetector::append(const Frame* frame, TransponderSystem transponder_system, uint32_t transponder_id) {
     TransponderKey transponder_key = std::make_pair(transponder_system, transponder_id);
-    Detection d(frame->timestamp, frame->timecode, frame->rssi());
+    Detection d(frame->timestamp, frame->timecode, frame->rssi(), frame->mer());
     
     std::lock_guard<std::mutex> lock(mutex);
     detections[transponder_key].push_back(std::move(d));
@@ -334,6 +334,20 @@ PassingPoint compute_passing_point(const std::deque<Detection>& detections) {
     return {pass_timestamp, max_rssi, 0};
 }
 
+// A passing is only reported once REPORT_HIT_LIMIT frames were received, so the
+// signal quality it depends on is the one of the REPORT_HIT_LIMIT-th strongest
+// (by RSSI) detection, not the strongest one. Report that detection's MER.
+float passing_snr(const std::deque<Detection>& detections) {
+    std::vector<Detection> by_rssi(detections.begin(), detections.end());
+    const size_t k = std::min<size_t>(REPORT_HIT_LIMIT, by_rssi.size()) - 1;
+    std::nth_element(
+        by_rssi.begin(), by_rssi.begin() + k, by_rssi.end(),
+        [](const Detection& a, const Detection& b) {
+            return a.rssi > b.rssi;
+        });
+    return by_rssi[k].mer;
+}
+
 Passing create_passing(TransponderKey transponder_key, const std::deque<Detection>& detections) {
     PassingPoint stats = compute_passing_point(detections);
     Passing p = {
@@ -342,7 +356,8 @@ Passing create_passing(TransponderKey transponder_key, const std::deque<Detectio
         .transponder_id = transponder_key.second,
         .rssi = stats.max_rssi,
         .hits = detections.size(),
-        .duration = stats.duration
+        .duration = stats.duration,
+        .snr = passing_snr(detections)
     };
     return p;
 }

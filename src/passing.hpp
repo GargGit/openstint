@@ -25,8 +25,9 @@ struct Detection {
     uint64_t timestamp;
     uint64_t timecode;
     float rssi;
+    float mer; // modulation error ratio of the frame, dB
 
-    Detection(uint64_t _ts, uint64_t _tc, float _rssi) : timestamp(_ts), timecode(_tc), rssi(_rssi) {};
+    Detection(uint64_t _ts, uint64_t _tc, float _rssi, float _mer) : timestamp(_ts), timecode(_tc), rssi(_rssi), mer(_mer) {};
 };
 
 struct TimeSyncMsg {
@@ -43,6 +44,7 @@ struct Passing {
     float rssi;
     size_t hits;
     uint64_t duration;
+    float snr; // dB, MER of the REPORT_HIT_LIMIT-th strongest detection
 };
 
 struct TimeSync {

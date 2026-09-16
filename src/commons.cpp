@@ -263,13 +263,14 @@ void report_detections() {
 
     std::vector<Passing> passings = passing_detector.identify_passings(now_ts > 250000ul ? (now_ts-250000ul) : 0ul);
     for (const auto& passing : passings) {
-        const std::string report = std::format("P {} {} {} {:.2f} {} {}",
+        const std::string report = std::format("P {} {} {} {:.2f} {} {} {:.1f}",
             reporting_timestamp(passing.timestamp, now_ts, now_sysclk),
             transponder_system_name(passing.transponder_type),
             passing.transponder_id,
             passing.rssi,
             passing.hits,
-            passing.duration
+            passing.duration,
+            passing.snr
         );
 
         std::cout << report << std::endl;

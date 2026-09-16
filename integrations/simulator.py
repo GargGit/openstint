@@ -117,9 +117,10 @@ class Simulator:
             rssi = random.gauss(-10, 3)
             hit_count = random.randint(20, 80)
             pass_duration = random.randint(80000, 110000)
+            snr = random.gauss(20, 4)
             self.hits += hit_count
 
-            passing_msg = f"P {timecode} OPN {transponder_id} {rssi:.2f} {hit_count} {pass_duration}"
+            passing_msg = f"P {timecode} OPN {transponder_id} {rssi:.2f} {hit_count} {pass_duration} {snr:.1f}"
             self.publish(passing_msg)
 
             # 1/5 chance to generate a timesync message
