@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <climits>
 #include <string>
 
 extern "C" {
@@ -190,6 +191,176 @@ int decode_rc3(const uint8_t *softbits, uint32_t *transponder_id, uint8_t *statu
     return 1;
 }
 
+static constexpr uint8_t VOSTOK_HEADER[2] = {0x63, 0x1a};
+static constexpr uint8_t VOSTOK_HEADER_PARITY = 0x79; // 0x63 ^ 0x1a
+
+// Rebuild the whole frame from the transponder id: everything else in it is
+// either fixed or derived from the id, so this is the only frame a given id
+// can produce.
+static void vostok_encode(uint32_t transponder_id, uint8_t *frame) {
+    uint8_t id0 = static_cast<uint8_t>((transponder_id >> 16) & 0xff);
+    uint8_t id1 = static_cast<uint8_t>((transponder_id >> 8) & 0xff);
+    uint8_t id2 = static_cast<uint8_t>(transponder_id & 0xff);
+    uint8_t p = static_cast<uint8_t>(id0 ^ id1 ^ id2);
+
+    frame[0] = VOSTOK_HEADER[0]; frame[1] = VOSTOK_HEADER[1];
+    frame[2] = id0; frame[3] = id1; frame[4] = id2;
+    frame[5] = static_cast<uint8_t>(VOSTOK_HEADER_PARITY ^ p);
+    frame[6] = id0; frame[7] = id1; frame[8] = id2;
+    frame[9] = p;
+}
+
+// Strict Vostok decode: read the frame off the symbols and reject anything that
+// is not an exact codeword. This is the fast path; it decodes every frame that
+// arrived without a single symbol error.
+static bool decode_vostok_strict(const uint8_t *softbits, uint32_t *transponder_id) {
+    // differential-decode into 10 bytes, MSB first. prev=0 as in decode_rc3.
+    uint8_t frame[10] = {0};
+    int prev = 0;
+    for (int i = 0; i < 80; i++) {
+        int raw = (softbits[i] > 127) ? 1 : 0;
+        frame[i / 8] |= static_cast<uint8_t>((raw ^ prev) << (7 - (i % 8)));
+        prev = raw;
+    }
+
+    if (frame[0] != VOSTOK_HEADER[0] || frame[1] != VOSTOK_HEADER[1]) { // fixed header
+        return false;
+    }
+    // both copies of the transponder id must agree
+    if (frame[2] != frame[6] || frame[3] != frame[7] || frame[4] != frame[8]) {
+        return false;
+    }
+    uint8_t c1 = 0;
+    for (int i = 0; i < 5; i++) {
+        c1 ^= frame[i];
+    }
+    if (c1 != frame[5] || static_cast<uint8_t>(c1 ^ VOSTOK_HEADER_PARITY) != frame[9]) {
+        return false;
+    }
+
+    *transponder_id = (static_cast<uint32_t>(frame[2]) << 16)
+                    | (static_cast<uint32_t>(frame[3]) << 8)
+                    | static_cast<uint32_t>(frame[4]);
+    return true;
+}
+
+// Vostok error-corrected decode: 
+// key idea: fixed header + 8 byte data; the n-th bit of data bytes:
+//   x, y, z, h[k]^x^y^z, x, y, z, x^y^z
+// as such, 0th bits are independent of 1st bits, etc.
+// we have 8x (8,3) block code
+//
+// so: we have to figure out 3 bits for each block, 8x2^3=8x8 states
+// much different problem from 2^24 state one naively thinks of
+//
+static constexpr int VOSTOK_HEADER_MAX_DIST = 2; // accept a codeword within this many symbols
+static constexpr int VOSTOK_DATA_MAX_DIST = 4; // accept a codeword within this many symbols
+
+// How many channel symbols disagree with the frame this id would have sent.
+// Gives up once past limit: the caller only cares about close frames.
+static int vostok_symbol_distance(uint32_t transponder_id, const int *hard, int limit) {
+    uint8_t frame[10];
+    vostok_encode(transponder_id, frame);
+
+    int mismatch = 0, sym = 0;
+    for (int i = 0; i < 80; i++) {
+        sym ^= (frame[i / 8] >> (7 - (i % 8))) & 1; // differentially re-encode
+        mismatch += (sym != hard[i]);
+        if (mismatch > limit) {
+            return limit + 1;
+        }
+    }
+    return mismatch;
+}
+
+static bool decode_vostok_correct(const uint8_t *softbits, uint32_t *transponder_id) {
+    int hard[80];
+    int bit[80];         // differentially decoded frame bit
+    int reliability[80]; // what that bit is worth, 0 when it is a coin flip
+    int prev_hard = 0, prev_weight = 127; // the reference symbol is known exactly
+    for (int i = 0; i < 80; i++) {
+        int w = static_cast<int>(softbits[i]) - 128; // >=0 is a one, same as (softbits[i] > 127)
+        hard[i] = (w >= 0) ? 1 : 0;
+        int weight = (w >= 0) ? w : -w;
+        bit[i] = hard[i] ^ prev_hard;
+        reliability[i] = std::min(weight, prev_weight);
+        prev_hard = hard[i];
+        prev_weight = weight;
+    }
+
+    // drop frame if header has more than VOSTOK_HEADER_MAX_DIST mismatch
+    int header_mismatch = 0, header_sym = 0;
+    for (int i = 0; i < 16; i++) {
+        header_sym ^= (VOSTOK_HEADER[i / 8] >> (7 - (i % 8))) & 1;
+        header_mismatch += (header_sym != hard[i]);
+    }
+    if (header_mismatch > VOSTOK_HEADER_MAX_DIST) {
+        return false;
+    }
+
+    // Decode each bit position on its own, keeping the runner-up as well.
+    uint32_t best_id = 0, runner_up_id[8];
+    for (int k = 0; k < 8; k++) {
+        const int shift = 7 - k;
+        const int h = (VOSTOK_HEADER_PARITY >> shift) & 1;
+
+        // for each position, we have to figure out 3 bits.
+        // => as such, we must check 2^3=8 possible combinations
+        // the next loop does exactly that, and scores each by 
+        // a "cost function", derived from softbits
+        int best_cost = INT_MAX, second_cost = INT_MAX, best = 0, second = 0;
+        for (int c = 0; c < 8; c++) {
+            const int x = (c >> 2) & 1, y = (c >> 1) & 1, z = c & 1;
+            const int p = x ^ y ^ z;
+            // what bytes 2..9 carry at this bit position if the id is this candidate
+            const int expected[8] = {x, y, z, h ^ p, x, y, z, p};
+
+            int cost = 0;
+            for (int b = 0; b < 8; b++) {
+                const int i = 8 * (b + 2) + k;
+                if (expected[b] != bit[i]) {
+                    cost += reliability[i]; // disagreeing with a strong symbol is expensive
+                }
+            }
+            if (cost < best_cost) {
+                second_cost = best_cost; second = best;
+                best_cost = cost; best = c;
+            } else if (cost < second_cost) {
+                second_cost = cost; second = c;
+            }
+        }
+
+        // place this position's three bits into id0, id1 and id2
+        best_id |= (static_cast<uint32_t>((best >> 2) & 1) << (16 + shift))
+                 | (static_cast<uint32_t>((best >> 1) & 1) << (8 + shift))
+                 | (static_cast<uint32_t>(best & 1) << shift);
+        runner_up_id[k] = (static_cast<uint32_t>((second >> 2) & 1) << (16 + shift))
+                        | (static_cast<uint32_t>((second >> 1) & 1) << (8 + shift))
+                        | (static_cast<uint32_t>(second & 1) << shift);
+    }
+
+    // The winners, then the eight frames that retry one position with its
+    // runner-up. Keep whichever is closest to the symbols we received.
+    uint32_t candidate = best_id;
+    int best_distance = vostok_symbol_distance(best_id, hard, VOSTOK_DATA_MAX_DIST);
+    for (int k = 0; k < 8 && best_distance > 0; k++) {
+        const uint32_t mask = 0x00010101u << (7 - k); // this position's three bits
+        uint32_t id = (best_id & ~mask) | runner_up_id[k];
+
+        int distance = vostok_symbol_distance(id, hard, best_distance - 1);
+        if (distance < best_distance) { // closer to what we received
+            best_distance = distance;
+            candidate = id;
+        }
+    }
+
+    if (best_distance > VOSTOK_DATA_MAX_DIST) {
+        return false;
+    }
+    *transponder_id = candidate;
+    return true;
+}
+
 int decode_vostok(const uint8_t *softbits, uint32_t *transponder_id) {
     // Vostok transponders reuse the RC3 preamble, but the payload is not
     // convolutionally encoded at all. Once the differential-BPSK is undone, an
@@ -206,36 +377,10 @@ int decode_vostok(const uint8_t *softbits, uint32_t *transponder_id) {
     //   c2 = c1 ^ id[0] ^ id[1] ^ id[2] = c1 ^ 0x79  (XOR of bytes 0..8)
     //
     // so c2 is fully determined by c1, and c1 ^ c2 == 0x79 in every frame.
-
-    // differential-decode into 10 bytes, MSB first. prev=0 as in decode_rc3.
-    uint8_t frame[10] = {0};
-    int prev = 0;
-    for (int i = 0; i < 80; i++) {
-        int raw = (softbits[i] > 127) ? 1 : 0;
-        frame[i / 8] |= static_cast<uint8_t>((raw ^ prev) << (7 - (i % 8)));
-        prev = raw;
+    if (decode_vostok_strict(softbits, transponder_id)) {
+        return 1;
     }
-
-    if (frame[0] != 0x63 || frame[1] != 0x1a) { // fixed header
-        return 0;
-    }
-    // both copies of the transponder id must agree
-    if (frame[2] != frame[6] || frame[3] != frame[7] || frame[4] != frame[8]) {
-        return 0;
-    }
-    uint8_t c1 = 0;
-    for (int i = 0; i < 5; i++) {
-        c1 ^= frame[i];
-    }
-    if (c1 != frame[5] || static_cast<uint8_t>(c1 ^ 0x79) != frame[9]) {
-        return 0;
-    }
-
-    *transponder_id = (static_cast<uint32_t>(frame[2]) << 16)
-                    | (static_cast<uint32_t>(frame[3]) << 8)
-                    | static_cast<uint32_t>(frame[4]);
-
-    return 1;
+    return decode_vostok_correct(softbits, transponder_id) ? 1 : 0;
 }
 
 void AmbRcBlacklist::process(uint64_t timestamp, uint8_t status_code, uint32_t transponder_id) {
