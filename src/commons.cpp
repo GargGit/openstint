@@ -72,9 +72,7 @@ bool process_frame(Frame* frame) {
         case TransponderProtocol::RC3: {
             uint8_t status_code;
             // Vostok transponders transmit with the RC3 preamble, but use different framing.
-            // decode_rc3() verifies an 8 bit tail, so ~1 in 256 Vostok frames might pass.
-            // An RC3 frame satisfying all 48 bits of the Vostok check is ~2^-48.
-            // => check Vostok first
+            // => check Vostok first, it's quick
             if (decode_vostok(softbits, &transponder_id)) {
                 passing_detector.append(frame, TransponderSystem::Vostok, transponder_id);
                 return true;
