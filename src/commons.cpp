@@ -107,12 +107,14 @@ bool process_frame(Frame* frame) {
             if (!msg.is_valid) { // fails validation
                 return false;
             }
+            transponder_id = 0; // stays 0 for a payload no transponder has been learned for
             if (rc4_registry->lookup(msg.payload, &transponder_id)) {
                 passing_detector.append(frame, TransponderSystem::AMB, transponder_id);
-                rc4_trainer.append(frame->timestamp, frame->rssi(), transponder_id, msg.payload);
-                return true;
             }
-            rc4_trainer.append(frame->timestamp, frame->rssi(), 0, msg.payload);
+            // Only frames that arrived intact are worth learning from.
+            if (msg.corrections == 0) {
+                rc4_trainer.append(frame->timestamp, frame->rssi(), transponder_id, msg.payload);
+            }
             return true;
         }
     }
