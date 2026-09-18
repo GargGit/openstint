@@ -10,12 +10,12 @@
 #include <set>
 #include <string>
 
-// Training wants a transponder parked on the antenna, so the candidate has to stand
-// this far above the measured noise floor. Frame::rssi() and the noise floor in RxSnapshot
-// are both dBFS over total complex power, so their difference is an SNR in dB and the
-// gate tracks the radio's gain instead of assuming one - which the previous absolute
-// -20 dBFS limit did, and got wrong by 10*log10(samples_per_symbol/2) on top of that.
-#define RC4_TRAINING_MIN_SNR 16.0f
+// Training wants a transponder parked on the antenna. One of the following must be met:
+// (1) the candidate has to stand this far above the measured noise floor.
+#define RC4_TRAINING_MIN_SNR 12.0f
+// (2) the candidate must have this much of signal strength
+#define RC4_TRAINING_MIN_RSSI -20.0f
+
 
 // GF(2) verification codes carried in blocks 17..20: check v is the XOR of the payload
 // bits its polynomial selects, plus a constant, and equals the bit at parity_pos[v].
@@ -56,7 +56,7 @@ static const int parity_pos[16] = {
 };
 
 // number of the least reliable symbols Chase-II retries
-static constexpr int RC4_CHASE_BITS = 6;
+static constexpr int RC4_CHASE_BITS = 4;
 
 // The frame's 36 parity checks, written over the 100 symbols as they arrive off the
 // air rather than over the differentially decoded bits. Both describe the same code,
@@ -289,7 +289,9 @@ RC4Trainer::EvaluationResult RC4Trainer::evaluate(uint64_t timestamp, float nois
             // non-finite means there is no noise estimate yet (or the frames never stop
             // long enough to take one): fail closed rather than start on an unknown floor
             const float snr = last.rssi - noise_floor;
-            if (!std::isfinite(snr) || snr < RC4_TRAINING_MIN_SNR) break;
+            if (!std::isfinite(snr)) break;
+            // one of the conditions must be met:
+            if ((snr < RC4_TRAINING_MIN_SNR) && (last.rssi < RC4_TRAINING_MIN_RSSI)) break;
             auto tail = std::prev(buffer.end(), 128);
             auto [mn, mx] = std::minmax_element(
                 tail,
