@@ -80,8 +80,11 @@ bool process_frame(Frame* frame) {
                 return true;
             }
             if (decode_rc3(softbits, &transponder_id, &status_code)) {
-                if (transponder_id == 0)
+                // Vostok send periodic messages, and 0x000.... can decode to a valid
+                // RC3 id=0 status=0 message; this check discards them.
+                if (transponder_id == 0) {
                     return false;
+                }
                 
                 if (transponder_id >= 10000000) { // not a 7-digit transponder for sure
                     // check for known status/validation message (to track some statistics)

@@ -1,5 +1,6 @@
 # Contributors
 
+- [@GargGit][https://github.com/GargGit/openstint/tree/FixVostokAmb0] - Vostok-generated phantom AMB transponder with ID=0 fix
 - [@oldfan](https://github.com/oldfan) - Vostok IQ captures
 - [disq](https://www.rctech.net/forum/showpost.php?p=16250899&postcount=37) - RC4 verification scheme
 - [@oldfan](https://github.com/oldfan) - RC4 learning mode
