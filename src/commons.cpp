@@ -78,6 +78,9 @@ bool process_frame(Frame* frame) {
                 return true;
             }
             if (decode_rc3(softbits, &transponder_id, &status_code)) {
+                if (transponder_id == 0)
+                    return false;
+                
                 if (transponder_id >= 10000000) { // not a 7-digit transponder for sure
                     // check for known status/validation message (to track some statistics)
                     return ((status_code & 0x07) == 0); 
